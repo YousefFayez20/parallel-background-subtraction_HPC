@@ -7,65 +7,159 @@ using namespace std;
 using namespace cv;
 namespace fs = std::filesystem;
 
-bool validate_image_sizes(const vector<Mat>& images) {
-    if (images.empty()) return false;
-    int width = images[0].cols;
-    int height = images[0].rows;
+Mat compute_estimated_background(const vector<Mat>& images) {
+    
+    if (images.empty()) {
+        cerr << "Error: No images found!" << endl;
+        return Mat(); // Return empty matrix
+    }
+
+    int num_images = images.size(); // Total number of images (M)
+    // Get the size of images
+    int rows = images[0].rows; // Number of rows (height)
+    int cols = images[0].cols; // Number of columns (width)
+    
+    // Create a matrix to accumulate sum of pixel values, We use floating point to avoid integer overflow
+    Mat background_sum = Mat::zeros(rows, cols, CV_32FC1);
+
+    // Loop over all images one by one
+    for (int img_idx = 0; img_idx < num_images; ++img_idx) {
+
+        // Get current image
+        Mat current_image = images[img_idx];
+
+        // Loop over all pixels of the current image
+        for (int row = 0; row < rows; ++row) {
+            for (int col = 0; col < cols; ++col) {
+
+                // Get pixel value at (row, col) from current image
+                uchar pixel_value = current_image.at<uchar>(row, col);
+
+                // Convert to float for safe addition
+                float pixel_value_float = static_cast<float>(pixel_value);
+
+                // Add pixel value to the accumulator
+                background_sum.at<float>(row, col) += pixel_value_float;
+            }
+        }
+    }
+
+    //Create a matrix to store the final background (float type first)
+    Mat background_mean = Mat::zeros(rows, cols, CV_32FC1);
+    float total_sum = 0;
+    float mean_value = 0;
+    // Loop over each pixel again to divide sum by number of images (M)
+    // B(row,col) = (pixel1(row,col) + pixel2(row,col) + ... + pixelM(row,col)) / M
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
+
+            // Get the accumulated sum at (row, col)
+            total_sum = background_sum.at<float>(row, col);
+
+            // Calculate mean (average) value
+             mean_value = total_sum / static_cast<float>(num_images);
+
+            // Store the mean value in the background_mean matrix
+            background_mean.at<float>(row, col) = mean_value;
+        }
+    }
+
+    // Convert the background from float to 8-bit for display/saving
+    Mat background_final;
+    background_mean.convertTo(background_final, CV_8UC1);
+
+    //Return the computed background image
+    return background_final;
+}
+
+bool validate_images_same_size(const vector<Mat>& images) {
+    if (images.empty()) {
+        cerr << "Error: No images to validate!" << endl;
+        return false;
+    }
+
+    int standard_rows = images[0].rows;
+    int standard_cols = images[0].cols;
+
     for (size_t i = 1; i < images.size(); ++i) {
-        if (images[i].cols != width || images[i].rows != height) {
-            cerr << "Error: Image " << i << " has a different size!" << endl;
+        if (images[i].rows != standard_rows || images[i].cols != standard_cols) {
+            cerr << "Error: Image at index " << i << " does not match size ("
+                << standard_rows << "x" << standard_cols << "). "
+                << "Found (" << images[i].rows << "x" << images[i].cols << ")." << endl;
             return false;
         }
     }
+
+    cout << "All images have consistent size: "
+        << standard_rows << "x" << standard_cols << "." << endl;
     return true;
 }
 
-Mat compute_background(const vector<Mat>& images) {
-    if (images.empty()) {
-        cerr << "No images to process!" << endl;
+
+Mat compute_foreground_mask(const Mat& background, const Mat& frame, int threshold_value) {
+    if (background.empty()) {
+        cerr << "Error: Background image is empty!" << endl;
+        return Mat();
+    }
+    if (frame.empty()) {
+        cerr << "Error: Input frame image is empty!" << endl;
         return Mat();
     }
 
-    Mat accumulator = Mat::zeros(images[0].size(), CV_32FC1);
+    //Get the size of the images
+    int rows = background.rows;
+    int cols = background.cols;
 
-    for (const auto& img : images) {
-        Mat temp;
-        img.convertTo(temp, CV_32FC1);
-        accumulator += temp;
+    // Create a black image for the foreground mask (initially all pixels = 0)
+    Mat foreground_mask = Mat::zeros(rows, cols, CV_8UC1);
+
+    // Loop over every pixel (row by row, column by column)
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
+
+            // Read pixel values at (row, col)
+            int background_pixel_value = static_cast<int>(background.at<uchar>(row, col));
+            int frame_pixel_value = static_cast<int>(frame.at<uchar>(row, col));
+
+            // Compute absolute difference between background and current frame
+            int pixel_difference = abs(background_pixel_value - frame_pixel_value);
+
+            // Compare the difference with threshold
+            if (pixel_difference > threshold_value) {
+                // If the difference is greater than threshold, mark it as foreground (white pixel)
+                foreground_mask.at<uchar>(row, col) = 255;
+            }
+            else {
+                // Else, mark it as background (black pixel)
+                foreground_mask.at<uchar>(row, col) = 0;
+            }
+        }
     }
 
-    accumulator /= static_cast<float>(images.size());
-
-    Mat background;
-    accumulator.convertTo(background, CV_8UC1);
-
-    return background;
+    // Return the computed foreground mask
+    return foreground_mask;
 }
 
-Mat compute_foreground_mask(const Mat& background, const Mat& frame, int threshold_value) {
-    Mat diff, mask;
-    absdiff(background, frame, diff);
-    threshold(diff, mask, threshold_value, 255, THRESH_BINARY);
-    return mask;
-}
+
 
 int main() {
-    string input_directory = "D:\\HPC\\Images";
-    string output_directory = "D:\\HPC\\ForegroundResults"; // NEW output folder
+    /*these directories need to be dynamic for*/
+    string input_directory = "D:\\HPC\\Images2";
+    string output_directory = "D:\\HPC\\ForegroundResults";
 
     vector<pair<string, Mat>> input_images;
 
+    // === Loading Images ===
     try {
         for (const auto& entry : fs::directory_iterator(input_directory)) {
             if (entry.is_regular_file()) {
-                string file_path = entry.path().string();
-                Mat img = imread(file_path, IMREAD_GRAYSCALE);
+                Mat img = imread(entry.path().string(), IMREAD_GRAYSCALE);
                 if (img.empty()) {
-                    cerr << "Warning: Could not read image: " << file_path << endl;
+                    cerr << "Warning: Could not read image: " << entry.path() << endl;
                     continue;
                 }
                 input_images.push_back({ entry.path().filename().string(), img });
-                cout << "Loaded: " << file_path << endl;
+                cout << "Loaded: " << entry.path() << endl;
             }
         }
     }
@@ -81,25 +175,26 @@ int main() {
 
     cout << "Successfully loaded " << input_images.size() << " images." << endl;
 
-    // Extract just Mat images for background calculation
+    // === Extract Images for Processing ===
     vector<Mat> images_only;
     for (const auto& pair : input_images) {
         images_only.push_back(pair.second);
     }
 
-    if (!validate_image_sizes(images_only)) {
-        cerr << "Error: Not all images have the same size." << endl;
+    // === Validate All Images Have the Same Size ===
+    if (!validate_images_same_size(images_only)) {
+        cerr << "Error: Images are not the same size. Cannot continue." << endl;
         return -1;
     }
 
-    // === Compute Background ===
-    Mat background = compute_background(images_only);
+    // === Compute Background Image Manually ===
+    Mat background = compute_estimated_background(images_only);
     if (background.empty()) {
         cerr << "Background computation failed!" << endl;
         return -1;
     }
 
-    // Create output directory if it doesn't exist
+    // === Create Output Directory If It Doesn't Exist ===
     if (!fs::exists(output_directory)) {
         if (!fs::create_directory(output_directory)) {
             cerr << "Error: Could not create output directory!" << endl;
@@ -107,13 +202,13 @@ int main() {
         }
     }
 
-    // Save background into output folder
+    // === Save and Display the Estimated Background ===
     imwrite(output_directory + "\\estimated_background.jpg", background);
     imshow("Estimated Background", background);
     waitKey(500); // Show for a short time
 
-    // === Compute Foreground for every frame  ===
-    int threshold_value = 58;
+    // === Compute and Save Foreground Masks Manually ===
+    int threshold_value = 59;
     int counter = 0;
 
     for (const auto& [filename, frame] : input_images) {
@@ -124,9 +219,9 @@ int main() {
             cout << "Saved: " << output_filename << endl;
             counter++;
 
-            // Optional: Display each mask
+            // Optional: Display each foreground mask
             imshow("Foreground Mask", foreground_mask);
-            waitKey(300);
+            waitKey(300); // Short delay
         }
     }
 
