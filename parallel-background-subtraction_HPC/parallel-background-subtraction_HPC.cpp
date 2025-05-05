@@ -7,6 +7,18 @@ using namespace std;
 using namespace cv;
 namespace fs = std::filesystem;
 
+
+
+string clean_path(string path) {
+    
+    // Removes Extra Whitespace if detected.
+
+    path.erase(0, path.find_first_not_of(" \t\r\n\""));
+    path.erase(path.find_last_not_of(" \t\r\n\"") + 1);
+
+    return path;
+}
+
 Mat compute_estimated_background(const vector<Mat>& images) {
     
     if (images.empty()) {
@@ -143,9 +155,46 @@ Mat compute_foreground_mask(const Mat& background, const Mat& frame, int thresho
 
 
 int main() {
-    /*these directories need to be dynamic for*/
-    string input_directory = "D:\\HPC\\Images2";
-    string output_directory = "D:\\HPC\\ForegroundResults";
+
+
+    // === Receiving Directories === //
+
+	      // == Input Directory == //
+    string input_directory;
+    cout << "Please Enter The Path Of Your Inputes Frames Directory: \n";
+    getline(cin, input_directory);
+    input_directory = clean_path(input_directory);
+
+
+    // Validating selected input directory.
+    if (!fs::exists(input_directory) || !fs::is_directory(input_directory)) {
+        cerr << "Error: Input directory does not exist or is not a valid folder.\n";
+        return -1;
+    }
+          // == Input Directory == //
+
+
+          // == Output Directory == //
+    string output_directory;
+    cout << "Please Enter The Desired output Path.: \n";
+    getline(cin, output_directory);
+    output_directory = clean_path(output_directory);
+
+
+
+
+    // Validating selected output directory (+ Creating it if it doesn't exist.) 
+    if (!fs::exists(output_directory)) {
+        if (!fs::create_directory(output_directory)) {
+            cerr << "Error: Could not create output directory!" << endl;
+            return -1;
+        }
+    }
+          // == Output Directory == //
+
+
+
+
 
     vector<pair<string, Mat>> input_images;
 
@@ -173,13 +222,43 @@ int main() {
         return -1;
     }
 
+
+
     cout << "Successfully loaded " << input_images.size() << " images." << endl;
 
+
+
+    // === Decide Number Of Frames To Be Processed === //
+    int nFrames_selected = 0;
+    cout << "How Many Frames would you like to process? (Min: 1, Max: " << input_images.size() << "): ";
+	cin >> nFrames_selected;
+
+    if (nFrames_selected <= 0 || nFrames_selected > input_images.size())
+    {
+		cerr << "Error: Invalid number of frames selected. Exiting." << endl;
+        return -1;
+    }
+    // === Decide Number Of Frames To Be Processed === //
+
+  
     // === Extract Images for Processing ===
     vector<Mat> images_only;
+
+    try {
+        for (int i = 0; i < nFrames_selected; i++) {
+            images_only.push_back(input_images[i].second);
+        }
+    }
+    catch (const std::exception& e) {
+        cerr << "Error: " << e.what() << endl;
+        return -1;
+    }
+
+    /*
     for (const auto& pair : input_images) {
         images_only.push_back(pair.second);
     }
+    */
 
     // === Validate All Images Have the Same Size ===
     if (!validate_images_same_size(images_only)) {
@@ -194,13 +273,7 @@ int main() {
         return -1;
     }
 
-    // === Create Output Directory If It Doesn't Exist ===
-    if (!fs::exists(output_directory)) {
-        if (!fs::create_directory(output_directory)) {
-            cerr << "Error: Could not create output directory!" << endl;
-            return -1;
-        }
-    }
+
 
     // === Save and Display the Estimated Background ===
     imwrite(output_directory + "\\estimated_background.jpg", background);
@@ -211,7 +284,8 @@ int main() {
     int threshold_value = 59;
     int counter = 0;
 
-    for (const auto& [filename, frame] : input_images) {
+    for (size_t i = 0; i < images_only.size(); ++i) {
+        const Mat& frame = images_only[i];
         Mat foreground_mask = compute_foreground_mask(background, frame, threshold_value);
         if (!foreground_mask.empty()) {
             string output_filename = output_directory + "\\foreground_mask_" + to_string(counter) + ".jpg";
@@ -226,6 +300,8 @@ int main() {
     }
 
     cout << "All foreground masks saved into " << output_directory << "!" << endl;
+
+    system(("start \"\" \"" + output_directory + "\"").c_str());
 
     return 0;
 }
