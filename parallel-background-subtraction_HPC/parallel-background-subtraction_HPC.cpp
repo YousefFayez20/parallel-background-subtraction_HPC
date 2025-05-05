@@ -8,7 +8,6 @@ using namespace cv;
 namespace fs = std::filesystem;
 
 
-
 string clean_path(string path) {
     
     // Removes Extra Whitespace if detected.
@@ -17,6 +16,36 @@ string clean_path(string path) {
     path.erase(path.find_last_not_of(" \t\r\n\"") + 1);
 
     return path;
+}
+
+bool is_number(const string& str) {
+    if(str.empty()) return false;
+    string::const_iterator iterator = str.begin();
+    while(iterator !=str.end()){
+        if(isdigit(*iterator))
+            iterator++;
+        else return false;
+    }
+    return true;
+
+}
+
+void get_dataset_names(vector<pair<string, string>> & dataset_name_path) {
+    string dataset_path = "Dataset";
+    for(const auto& entry : fs::recursive_directory_iterator(dataset_path)) {
+        if (entry.is_directory()) {
+            for(const auto& inner_entry: fs::directory_iterator(entry.path())) {
+                if(inner_entry.is_regular_file()){
+                    string name, path;
+                    name = path = entry.path().string();
+                    name.erase(0, 8); // erase Dataset 
+                    replace(name.begin(), name.end(), '\\', ' '); // replace backslash
+                    dataset_name_path.push_back({name, path});
+                    break;
+                }
+            }            
+        }
+    }
 }
 
 Mat compute_estimated_background(const vector<Mat>& images) {
@@ -107,7 +136,6 @@ bool validate_images_same_size(const vector<Mat>& images) {
     return true;
 }
 
-
 Mat compute_foreground_mask(const Mat& background, const Mat& frame, int threshold_value) {
     if (background.empty()) {
         cerr << "Error: Background image is empty!" << endl;
@@ -159,26 +187,49 @@ int main() {
 
     // === Receiving Directories === //
 
+          string input, input_directory, output_directory;
+          // == Dataset Names == //
+          vector<pair<string,string>> dataset_name_path;
+          get_dataset_names(dataset_name_path);
+  
+          cout << "Please Choose A Dataset For Your Inputes Frames Directory: \n";
+          for(int i = 0; i < dataset_name_path.size(); i++){
+              cout << i + 1 << ") "<< dataset_name_path[i].first << "\n";
+          }
+          
 	      // == Input Directory == //
-    string input_directory;
-    cout << "Please Enter The Path Of Your Inputes Frames Directory: \n";
-    getline(cin, input_directory);
-    input_directory = clean_path(input_directory);
+            cout << "Or Enter The Path Of Your Inputes Frames Directory: \n";
 
+            getline(cin, input);
+            input = clean_path(input);
+
+            if(is_number(input)) {
+                // Validating dataset number.
+                int number = stoi(input) - 1;
+                if (number < 0 || number >= dataset_name_path.size()) {
+                    cerr << "Error: Input number does not exist or is not a valid number.\n";
+                    return -1;
+                }
+                input_directory  = dataset_name_path[stoi(input) - 1].second;
+                output_directory = "Output\\" + dataset_name_path[stoi(input) - 1].first;
+            } else
+                input_directory = input;
+        
 
     // Validating selected input directory.
     if (!fs::exists(input_directory) || !fs::is_directory(input_directory)) {
         cerr << "Error: Input directory does not exist or is not a valid folder.\n";
         return -1;
     }
-          // == Input Directory == //
 
 
           // == Output Directory == //
-    string output_directory;
-    cout << "Please Enter The Desired output Path.: \n";
-    getline(cin, output_directory);
-    output_directory = clean_path(output_directory);
+    if(output_directory.empty()){
+        cout << "Please Enter The Desired output Path.: \n";
+        getline(cin, output_directory);
+        output_directory = clean_path(output_directory);
+    }
+   
 
 
 
