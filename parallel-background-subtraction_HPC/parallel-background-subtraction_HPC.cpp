@@ -6,13 +6,13 @@
 #include <omp.h>
 #include <chrono>
 
-#define MODE "sequential"
+#define MODE "mpi"
 #define OMP
 
-
 #define INPUT_PATH "Dataset"
-#define OUTPUT_PATH "Output"
+#define OUTPUT_PATH "Output\\"
 #define VERBOSE false
+#define DEFAULT_DATASET "1"
 
 using namespace std;
 using namespace cv;
@@ -82,8 +82,8 @@ bool set_directories(string& input_directory, string& output_directory) {
 		input = clean_path(input);
 	}
 	else {
-		// For evaluation assume input 1
-		input = "1";
+		// For evaluation assume input DEFAULT_DATASET (1)
+		input = DEFAULT_DATASET;
 	}
 
 	if (is_number(input)) {
@@ -156,8 +156,8 @@ bool set_frames(int& nFrames_selected, const int& input_images_size) {
 		cin >> nFrames_selected;
 	}
 	else {
-		// For evaluation assume input 191
-		nFrames_selected = 191;
+		// For evaluation assume maximum input
+		nFrames_selected = input_images_size;
 	}
 
 	if (nFrames_selected <= 0 || nFrames_selected > input_images_size)
@@ -197,7 +197,7 @@ bool validate_images_same_size(const vector<Mat>& images) {
 				<< "Found (" << images[i].rows << "x" << images[i].cols << ")." << endl;
 			return false;
 		}
-}
+	}
 #endif // !OMP
 
 	if (VERBOSE) {
@@ -226,11 +226,11 @@ Mat compute_estimated_background(const vector<Mat>& images) {
 	for (int img_idx = 0; img_idx < num_images; ++img_idx) {
 
 		// Get current image
-		Mat current_image = images[img_idx]; 
+		Mat current_image = images[img_idx];
 		int row = 0;
 		int col = 0;
 #ifdef OMP
-		
+
 #pragma omp parallel for collapse(2) private(row, col)
 #endif // OMP
 		// Loop over all pixels of the current image
@@ -247,7 +247,7 @@ Mat compute_estimated_background(const vector<Mat>& images) {
 				background_sum.at<float>(row, col) += pixel_value_float;
 			}
 		}
-		
+
 	}
 
 	//Create a matrix to store the final background (float type first)
@@ -355,22 +355,15 @@ Mat compute_foreground_mask(const Mat& background, const Mat& frame, int thresho
 }
 
 vector<Mat> generate_foreground_masks(const vector<Mat>& images_only, const Mat& background, int threshold_value = 59) {
-	vector<Mat> masks;
-	/*
-	if we openmpeeed this it will differ in 1s but the images wont be in order 
-	*/
-
-//#ifdef OMP
-//#pragma omp parallel for
-//#endif // OMP
-	for (int i = 0; i < images_only.size();i++) {
+	vector<Mat> masks(images_only.size());
+#ifdef OMP
+#pragma omp parallel for
+#endif // OMP
+	for (int i = 0; i < images_only.size(); i++) {
 		const Mat& frame = images_only[i];
 		Mat mask = compute_foreground_mask(background, frame, threshold_value);
 		if (!mask.empty()) {
-//#ifdef OMP
-//#pragma omp critical
-//#endif // OMP
-			masks.push_back(mask);
+			masks[i] = mask;
 		}
 	}
 
@@ -402,9 +395,9 @@ void save_foreground_masks(const vector<Mat>& masks, const string& output_direct
 int sequential() {
 
 #ifdef OMP
-	
+
 	// leave it commented to get the number of cores your device got
-	// omp_set_num_threads(12); 
+	// omp_set_num_threads(12);
 #endif // OMP
 	// === Receiving Directories === //
 	string input_directory, output_directory;
@@ -438,6 +431,8 @@ int sequential() {
 		return -1;
 	}
 
+	auto start = chrono::high_resolution_clock::now();
+
 	// === Compute Background Image ===
 	Mat background = compute_estimated_background(images_only);
 	if (background.empty()) {
@@ -448,16 +443,19 @@ int sequential() {
 	// === Compute Foreground Masks ===
 	vector<Mat> masks = generate_foreground_masks(images_only, background);
 
+	auto end = chrono::high_resolution_clock::now();
+
+	auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
+	int seconds = duration.count() / 1000;
+	int milliseconds = duration.count() % 1000;
+	cout << "Execution time: " << seconds << ":" << milliseconds << " seconds" << endl;
+
 	// === Save and Display the Estimated Background ===
 	save_display_background(output_directory, background);
 
 	// === Save and Display Foreground Masks ===
 	save_foreground_masks(masks, output_directory);
 
-	return 0;
-}
-
-int openmp() {
 	return 0;
 }
 
@@ -468,6 +466,8 @@ int mpi() {
 	MPI_Init(nullptr, nullptr);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	std::chrono::steady_clock::time_point start, end;
 
 	int nFrames_selected = 0;
 
@@ -497,17 +497,16 @@ int mpi() {
 			MPI_Abort(MPI_COMM_WORLD, -1);
 		}
 
+		start = chrono::high_resolution_clock::now();
+
 		// === Flatten the images into 1d array ===
 		rows = images_only[0].rows;
 		cols = images_only[0].cols;
 		vector<vector<uchar>> flattened_images(nFrames_selected);
+
 		for (int i = 0; i < nFrames_selected; ++i) {
-			flattened_images[i].resize(rows * cols);
-			for (int row = 0; row < rows; ++row) {
-				for (int col = 0; col < cols; ++col) {
-					flattened_images[i][row * cols + col] = images_only[i].at<uchar>(row, col);
-				}
-			}
+			cv::Mat& img = images_only[i];
+			flattened_images[i].assign(img.datastart, img.dataend);
 		}
 
 		int total_pixels = rows * cols;
@@ -603,6 +602,13 @@ int mpi() {
 			memcpy(final_masks[i].data, gathered_masks[i].data(), rows * cols * sizeof(uchar));
 		}
 
+		end = chrono::high_resolution_clock::now();
+
+		auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
+		int seconds = duration.count() / 1000;
+		int milliseconds = duration.count() % 1000;
+		cout << "Execution time: " << seconds << ":" << milliseconds << " seconds" << endl;
+
 		// === Save and Display the Estimated Background ===
 		save_display_background(output_directory, final_background);
 
@@ -627,22 +633,12 @@ int main() {
 	else if (string(MODE) == "mpi") {
 		mode_function_ptr = mpi;
 	}
-	else if (string(MODE) == "openmp") {
-		mode_function_ptr = openmp;
-	}
 	else {
 		cerr << "Error: Unknown mode." << endl;
 		return 1;
 	}
 
-	auto start = chrono::high_resolution_clock::now();
-
 	int result = mode_function_ptr();
-
-	auto end = chrono::high_resolution_clock::now();
-
-	auto duration = chrono::duration_cast<chrono::seconds>(end - start);
-	cout << "Execution time: " << duration.count() << " seconds." << endl;
 
 	return result;
 }
