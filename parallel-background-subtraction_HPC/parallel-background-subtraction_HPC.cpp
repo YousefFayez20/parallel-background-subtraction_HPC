@@ -5,6 +5,7 @@
 #include <mpi.h>
 #include <omp.h>
 #include <chrono>
+#include <regex>
 
 #define MODE "mpi"
 #define OMP
@@ -59,6 +60,23 @@ void get_dataset_names(vector<pair<string, string>>& dataset_name_path) {
 		}
 	}
 }
+
+// Custom comparator to extract frame number from filename
+bool naturalSort(const fs::directory_entry& a, const fs::directory_entry& b) {
+	std::regex re(R"((\d+))");  // Matches sequences of digits
+	std::smatch matchA, matchB;
+	std::string nameA = a.path().filename().string();
+	std::string nameB = b.path().filename().string();
+
+	std::regex_search(nameA, matchA, re);
+	std::regex_search(nameB, matchB, re);
+
+	int numA = matchA.empty() ? 0 : std::stoi(matchA[1].str());
+	int numB = matchB.empty() ? 0 : std::stoi(matchB[1].str());
+
+	return numA < numB;
+}
+
 
 // === Algorithm Steps === //
 
@@ -124,17 +142,25 @@ bool set_directories(string& input_directory, string& output_directory) {
 
 bool load_images(vector<pair<string, Mat>>& input_images, const string& input_directory) {
 	try {
+		std::vector<fs::directory_entry> entries;
+
 		for (const auto& entry : fs::directory_iterator(input_directory)) {
 			if (entry.is_regular_file()) {
-				Mat img = imread(entry.path().string(), IMREAD_GRAYSCALE);
-				if (img.empty()) {
-					cerr << "Warning: Could not read image: " << entry.path() << endl;
-					continue;
-				}
-				input_images.push_back({ entry.path().filename().string(), img });
-				if (VERBOSE) {
-					cout << "Loaded: " << entry.path() << endl;
-				}
+				entries.push_back(entry);
+			}
+		}
+
+		std::sort(entries.begin(), entries.end(), naturalSort);
+
+		for (const auto& entry : entries) {
+			Mat img = imread(entry.path().string(), IMREAD_GRAYSCALE);
+			if (img.empty()) {
+				cerr << "Warning: Could not read image: " << entry.path() << endl;
+				continue;
+			}
+			input_images.push_back({ entry.path().filename().string(), img });
+			if (VERBOSE) {
+				cout << "Loaded: " << entry.path() << endl;
 			}
 		}
 	}
