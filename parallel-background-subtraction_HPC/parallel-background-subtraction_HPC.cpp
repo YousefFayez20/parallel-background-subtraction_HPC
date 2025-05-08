@@ -3,11 +3,15 @@
 #include <filesystem>
 #include <opencv2/opencv.hpp>
 #include <mpi.h>
+#include <omp.h>
 #include <chrono>
 
-#define MODE "mpi"
+#define MODE "sequential"
+#define OMP
+
+
 #define INPUT_PATH "Dataset"
-#define OUTPUT_PATH "Output\\"
+#define OUTPUT_PATH "Output"
 #define VERBOSE false
 
 using namespace std;
@@ -172,7 +176,20 @@ bool validate_images_same_size(const vector<Mat>& images) {
 
 	int standard_rows = images[0].rows;
 	int standard_cols = images[0].cols;
-
+#ifdef OMP
+	int not_standard_sizes = 0;
+#pragma omp parallel for
+	for (int i = 1; i < images.size(); ++i) {
+		if (images[i].rows != standard_rows || images[i].cols != standard_cols) {
+			cerr << "Error: Image at index " << i << " does not match size ("
+				<< standard_rows << "x" << standard_cols << "). "
+				<< "Found (" << images[i].rows << "x" << images[i].cols << ")." << endl;
+			not_standard_sizes++;
+		}
+	}
+	if (not_standard_sizes)return false;
+#endif // OMP
+#ifndef OMP
 	for (size_t i = 1; i < images.size(); ++i) {
 		if (images[i].rows != standard_rows || images[i].cols != standard_cols) {
 			cerr << "Error: Image at index " << i << " does not match size ("
@@ -180,7 +197,9 @@ bool validate_images_same_size(const vector<Mat>& images) {
 				<< "Found (" << images[i].rows << "x" << images[i].cols << ")." << endl;
 			return false;
 		}
-	}
+}
+#endif // !OMP
+
 	if (VERBOSE) {
 		cout << "All images have consistent size: "
 			<< standard_rows << "x" << standard_cols << "." << endl;
@@ -207,11 +226,16 @@ Mat compute_estimated_background(const vector<Mat>& images) {
 	for (int img_idx = 0; img_idx < num_images; ++img_idx) {
 
 		// Get current image
-		Mat current_image = images[img_idx];
-
+		Mat current_image = images[img_idx]; 
+		int row = 0;
+		int col = 0;
+#ifdef OMP
+		
+#pragma omp parallel for collapse(2) private(row, col)
+#endif // OMP
 		// Loop over all pixels of the current image
-		for (int row = 0; row < rows; ++row) {
-			for (int col = 0; col < cols; ++col) {
+		for (row = 0; row < rows; ++row) {
+			for (col = 0; col < cols; ++col) {
 
 				// Get pixel value at (row, col) from current image
 				uchar pixel_value = current_image.at<uchar>(row, col);
@@ -223,6 +247,7 @@ Mat compute_estimated_background(const vector<Mat>& images) {
 				background_sum.at<float>(row, col) += pixel_value_float;
 			}
 		}
+		
 	}
 
 	//Create a matrix to store the final background (float type first)
@@ -231,8 +256,13 @@ Mat compute_estimated_background(const vector<Mat>& images) {
 	float mean_value = 0;
 	// Loop over each pixel again to divide sum by number of images (M)
 	// B(row,col) = (pixel1(row,col) + pixel2(row,col) + ... + pixelM(row,col)) / M
-	for (int row = 0; row < rows; ++row) {
-		for (int col = 0; col < cols; ++col) {
+	int row = 0;
+	int col = 0;
+#ifdef OMP
+#pragma omp parallel for collapse(2) private(row, col, total_sum, mean_value)
+#endif // OMP
+	for (row = 0; row < rows; ++row) {
+		for (col = 0; col < cols; ++col) {
 
 			// Get the accumulated sum at (row, col)
 			total_sum = background_sum.at<float>(row, col);
@@ -291,10 +321,15 @@ Mat compute_foreground_mask(const Mat& background, const Mat& frame, int thresho
 
 	// Create a black image for the foreground mask (initially all pixels = 0)
 	Mat foreground_mask = Mat::zeros(rows, cols, CV_8UC1);
+	int row = 0;
+	int col = 0;
+#ifdef OMP
+#pragma omp parallel for collapse(2) private(row, col)
+#endif // OMP
 
 	// Loop over every pixel (row by row, column by column)
-	for (int row = 0; row < rows; ++row) {
-		for (int col = 0; col < cols; ++col) {
+	for (row = 0; row < rows; ++row) {
+		for (col = 0; col < cols; ++col) {
 
 			// Read pixel values at (row, col)
 			int background_pixel_value = static_cast<int>(background.at<uchar>(row, col));
@@ -321,10 +356,20 @@ Mat compute_foreground_mask(const Mat& background, const Mat& frame, int thresho
 
 vector<Mat> generate_foreground_masks(const vector<Mat>& images_only, const Mat& background, int threshold_value = 59) {
 	vector<Mat> masks;
+	/*
+	if we openmpeeed this it will differ in 1s but the images wont be in order 
+	*/
 
-	for (const Mat& frame : images_only) {
+//#ifdef OMP
+//#pragma omp parallel for
+//#endif // OMP
+	for (int i = 0; i < images_only.size();i++) {
+		const Mat& frame = images_only[i];
 		Mat mask = compute_foreground_mask(background, frame, threshold_value);
 		if (!mask.empty()) {
+//#ifdef OMP
+//#pragma omp critical
+//#endif // OMP
 			masks.push_back(mask);
 		}
 	}
@@ -355,6 +400,12 @@ void save_foreground_masks(const vector<Mat>& masks, const string& output_direct
 
 
 int sequential() {
+
+#ifdef OMP
+	
+	// leave it commented to get the number of cores your device got
+	// omp_set_num_threads(12); 
+#endif // OMP
 	// === Receiving Directories === //
 	string input_directory, output_directory;
 	if (set_directories(input_directory, output_directory) == 0)
