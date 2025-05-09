@@ -7,8 +7,9 @@
 #include <chrono>
 #include <regex>
 
-#define MODE "mpi"
+#define MODE "mpi" // sequential mpi
 #define OMP
+// #define MEDIAN_FILTER
 
 #define INPUT_PATH "Dataset"
 #define OUTPUT_PATH "Output\\"
@@ -76,6 +77,85 @@ bool naturalSort(const fs::directory_entry& a, const fs::directory_entry& b) {
 
 	return numA < numB;
 }
+
+	// === Median of Medians elper Functions === //
+
+uchar get_pivot_val(vector<uchar>& vec, int low, int high) {
+    if(high - low + 1 <= 9){ // if small size, get mean by sorting (will not increase time complexity)
+        vector<uchar> temp(vec.begin() + low, vec.begin() + high + 1);
+        sort(temp.begin(), temp.end());
+        return temp[temp.size() / 2];
+    }
+
+    vector<uchar> medians;
+    medians.reserve((high - low + 1 + 4) / 5); 
+    
+    for(int i = low; i <= high; i += 5) {
+        vector<uchar> temp;
+        temp.reserve(5);
+        // Group each 5 elements together
+        for(int j = 0; j < 5 && i + j <= high; j++) {
+            temp.push_back(vec[i + j]);
+        }
+		// Get median
+        sort(temp.begin(), temp.end());
+        medians.push_back(temp[temp.size() / 2]);
+    }
+    
+    if(medians.size() == 1) // Return val
+		return medians[0]; 
+    else  // Recursive call to get median of medians
+	    return get_pivot_val(medians, 0, medians.size() - 1);
+}
+
+int partition_func(vector<uchar>& vec, int low, int high, uchar pivot) {
+    int i = low;
+    int j = high;
+    
+    while(i <= j) {
+        while(i <= high && vec[i] < pivot) i++;
+        while(j >= low && vec[j] > pivot) j--;
+        
+        if(i <= j) {
+            swap(vec[i], vec[j]);
+            i++;
+            j--;
+        }
+    }
+    
+    return j; // index where elements <= pivot
+}
+
+int find_median_util(vector<uchar>& vec, int k, int low, int high){
+    if(low == high) { // Breaking condition
+        return vec[low];
+    }
+
+    uchar pivot = get_pivot_val(vec, low, high); // Get pivot value
+    int pivot_ind = partition_func(vec, low, high, pivot); // Get pivot index
+    
+    int length = pivot_ind - low + 1; 
+    
+    if(k <= length) { // Recurisve call but find in lower portion
+        return find_median_util(vec, k, low, pivot_ind);
+    } else {  // Recurisve call but find in higher portion
+        return find_median_util(vec, k - length, pivot_ind + 1, high);
+    }
+}
+
+float find_median(vector<uchar> vec){  // O(n) Algorithm using median of medians
+    int n = vec.size();
+    
+    if(n % 2 == 1) { // handle odd sized vec
+        return find_median_util(vec, (n + 1) / 2, 0, n - 1);
+    } else { // handle even size vec by taking average
+        uchar lower = find_median_util(vec, n / 2, 0, n - 1);
+        vector<uchar> vec_copy = vec; // use vec copy
+        uchar upper = find_median_util(vec_copy, n / 2 + 1, 0, n - 1);
+        return (lower + upper) / 2.0;
+    }
+}
+
 
 
 // === Algorithm Steps === //
@@ -231,6 +311,44 @@ bool validate_images_same_size(const vector<Mat>& images) {
 			<< standard_rows << "x" << standard_cols << "." << endl;
 	}
 	return true;
+}
+
+Mat compute_estimated_background_median_filter(const vector<Mat>& images) {
+
+	if (images.empty()) {
+		cerr << "Error: No images found!" << endl;
+		return Mat(); // Return empty matrix
+	}
+
+	int num_images = images.size(); // Total number of images (M)
+	// Get the size of images
+	int rows = images[0].rows; // Number of rows (height)
+	int cols = images[0].cols; // Number of columns (width)
+
+	Mat background_median= Mat::zeros(rows, cols, CV_32FC1);
+	#ifdef OMP
+	#pragma omp parallel for collapse(2)
+	#endif // OMP
+	// Loop over all pixels 
+	for (int row = 0; row < rows; ++row) {
+		for (int col = 0; col < cols; ++col) {
+			vector<uchar> all_ijth_pixels;
+			for (int img_idx = 0; img_idx < num_images; ++img_idx) {
+				// Get pixels from all images with i = row and j = colum
+				all_ijth_pixels.push_back(images[img_idx].at<uchar>(row, col));
+			}
+			// Get median
+			background_median.at<float>(row, col) = find_median(all_ijth_pixels);		
+		}
+	}
+
+
+	// Convert the background from float to 8-bit for display/saving
+	Mat background_final;
+	background_median.convertTo(background_final, CV_8UC1);
+
+	//Return the computed background image
+	return background_final;
 }
 
 Mat compute_estimated_background(const vector<Mat>& images) {
@@ -460,7 +578,13 @@ int sequential() {
 	auto start = chrono::high_resolution_clock::now();
 
 	// === Compute Background Image ===
-	Mat background = compute_estimated_background(images_only);
+	#ifdef MEDIAN_FILTER
+		Mat background = compute_estimated_background_median_filter(images_only);
+	#endif
+	#ifndef MEDIAN_FILTER
+		Mat background = compute_estimated_background(images_only);
+	#endif 
+
 	if (background.empty()) {
 		cerr << "Background computation failed!" << endl;
 		return -1;
@@ -523,7 +647,7 @@ int mpi() {
 			MPI_Abort(MPI_COMM_WORLD, -1);
 		}
 
-		start = chrono::high_resolution_clock::now();
+		start = chrono::steady_clock::now();
 
 		// === Flatten the images into 1d array ===
 		rows = images_only[0].rows;
@@ -577,7 +701,12 @@ int mpi() {
 	}
 
 	// === Compute Background Image ===
-	Mat background = compute_estimated_background(local_images);
+	#ifdef MEDIAN_FILTER
+		Mat background = compute_estimated_background_median_filter(local_images);
+	#endif
+	#ifndef MEDIAN_FILTER
+		Mat background = compute_estimated_background(local_images);
+	#endif 
 	if (background.empty()) {
 		cerr << "Background computation failed!" << endl;
 		MPI_Abort(MPI_COMM_WORLD, -1);
@@ -628,7 +757,7 @@ int mpi() {
 			memcpy(final_masks[i].data, gathered_masks[i].data(), rows * cols * sizeof(uchar));
 		}
 
-		end = chrono::high_resolution_clock::now();
+		end = chrono::steady_clock::now();
 
 		auto duration = chrono::duration_cast<chrono::milliseconds>(end - start);
 		int seconds = duration.count() / 1000;
@@ -663,6 +792,19 @@ int main() {
 		cerr << "Error: Unknown mode." << endl;
 		return 1;
 	}
+
+
+	// #if defined(OMP) && defined(MEDIAN_FILTER)
+    // printf("!!!!! %s, with OpenMP and Median Filter\n", MODE);
+	// #elif defined(OMP)
+	// 	printf("!!!!! %s, with OpenMP and Mean Filter\n", MODE);
+	// #elif defined(MEDIAN_FILTER)
+	// 	printf("!!!!! %s, without OpenMP and Median Filter\n", MODE);
+	// #else
+	// 	printf("!!!!! %s, without OpenMP and Mean Filter\n", MODE);
+	// #endif
+	
+
 
 	int result = mode_function_ptr();
 
