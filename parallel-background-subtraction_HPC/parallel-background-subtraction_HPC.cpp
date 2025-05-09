@@ -7,12 +7,12 @@
 #include <chrono>
 #include <regex>
 
-#define MODE "mpi" // sequential mpi
-#define OMP
+#define MODE "sequential" // sequential mpi
+//#define OMP
 // #define MEDIAN_FILTER
 
 #define INPUT_PATH "Dataset"
-#define OUTPUT_PATH "Output\\"
+#define OUTPUT_PATH "Output"
 #define VERBOSE false
 #define DEFAULT_DATASET "1"
 
