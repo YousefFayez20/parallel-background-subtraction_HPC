@@ -793,19 +793,6 @@ int main() {
 		return 1;
 	}
 
-
-	// #if defined(OMP) && defined(MEDIAN_FILTER)
-    // printf("!!!!! %s, with OpenMP and Median Filter\n", MODE);
-	// #elif defined(OMP)
-	// 	printf("!!!!! %s, with OpenMP and Mean Filter\n", MODE);
-	// #elif defined(MEDIAN_FILTER)
-	// 	printf("!!!!! %s, without OpenMP and Median Filter\n", MODE);
-	// #else
-	// 	printf("!!!!! %s, without OpenMP and Mean Filter\n", MODE);
-	// #endif
-	
-
-
 	int result = mode_function_ptr();
 
 	return result;
